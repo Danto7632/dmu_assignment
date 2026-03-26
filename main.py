@@ -266,17 +266,44 @@ async def convert_to_official(file: UploadFile = File(...)):
             return '0' + s
         return s
 
-    def get_floor(room_no):
-        nums = re.findall(r'\d+', str(room_no))
+    def get_series_by_candidates(source_df, candidates):
+        for col in candidates:
+            if col in source_df.columns:
+                return source_df[col]
+        return pd.Series([""] * len(source_df), index=source_df.index)
+
+    def normalize_room_no(room_no):
+        if pd.isna(room_no) or str(room_no).strip() == "":
+            return ""
+        s = str(room_no).strip()
+        nums_3_or_more = re.findall(r'\d{3,}', s)
+        if nums_3_or_more:
+            return nums_3_or_more[0][:3]
+        nums = re.findall(r'\d+', s)
         if nums:
-            return nums[0][0] if len(nums[0]) >= 3 else "1"
-        return "1"
+            return nums[0].zfill(3)[:3]
+        return ""
+
+    def get_floor(room_type, normalized_room_no):
+        room_type_text = "" if pd.isna(room_type) else str(room_type)
+        if re.search(r'[FG]형', room_type_text, flags=re.IGNORECASE):
+            return "0"
+        if isinstance(normalized_room_no, str) and len(normalized_room_no) == 3 and normalized_room_no.isdigit():
+            return normalized_room_no[0]
+        return ""
 
     final_df = pd.DataFrame()
     final_df['No'] = range(1, len(df) + 1)
-    final_df['Floor'] = df['방 번호'].apply(get_floor) if '방 번호' in df.columns else ""
-    final_df['Room_No'] = df['방 번호'] if '방 번호' in df.columns else ""
-    final_df['Room_Type'] = df['타입_매칭용'] if '타입_매칭용' in df.columns else ""
+    room_no_series = get_series_by_candidates(df, ['방 번호', '호수'])
+    room_type_series = get_series_by_candidates(df, ['타입_매칭용', '유형'])
+    normalized_room_no = room_no_series.apply(normalize_room_no)
+
+    final_df['Room_No'] = normalized_room_no
+    final_df['Room_Type'] = room_type_series
+    final_df['Floor'] = [
+        get_floor(room_type, room_no)
+        for room_type, room_no in zip(room_type_series, normalized_room_no)
+    ]
     final_df['Hakbun'] = df['학번'].astype(str) if '학번' in df.columns else ""
     final_df['Name'] = df['성명'] if '성명' in df.columns else ""
     final_df['Sex'] = df['성별'] if '성별' in df.columns else ""
@@ -288,8 +315,10 @@ async def convert_to_official(file: UploadFile = File(...)):
     else:
         final_df['Phone'] = ""
 
-    final_df['E-mail'] = ""
-    final_df['Guardian_Phone'] = ""
+    email_series = get_series_by_candidates(df, ['이메일', 'E-mail', 'email'])
+    guardian_phone_series = get_series_by_candidates(df, ['부모님 핸드폰 번호', '학부모 연락처', 'Guardian_Phone'])
+    final_df['E-mail'] = email_series.fillna("").astype(str)
+    final_df['Guardian_Phone'] = guardian_phone_series.apply(format_phone)
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
